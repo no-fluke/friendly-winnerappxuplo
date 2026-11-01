@@ -1,7 +1,7 @@
 """
 vars.py — All configuration read from environment variables.
 Bot uses Pyrogram (api_id + api_hash + bot_token) — no StringSession needed.
-Bot is admin in the supergroup and uploads directly via MTProto.
+SUPERGROUP_ID is now OPTIONAL — users can set their channel dynamically via /appx.
 """
 import os
 from os import environ
@@ -11,6 +11,8 @@ API_HASH  = environ.get("API_HASH", "")
 BOT_TOKEN = environ.get("BOT_TOKEN", "")
 
 OWNER_ID      = int(environ.get("OWNER_ID", "0"))
+# SUPERGROUP_ID is now optional — users provide channel ID during /appx session.
+# If set, it acts as the default fallback channel.
 SUPERGROUP_ID = int(environ.get("SUPERGROUP_ID", "0"))
 CREDIT        = environ.get("CREDIT", "AppX Bot")
 
