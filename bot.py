@@ -12,7 +12,7 @@ from pyrogram.types import Message
 import pyromod
 
 from vars import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, SUPERGROUP_ID, CREDIT, DOWNLOAD_DIR
-from db import db
+from db import database as db
 import appx_api as api
 from downloader import download
 from uploader import upload_file, send_text_to_topic
