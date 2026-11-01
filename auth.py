@@ -11,7 +11,7 @@ from vars import OWNER_ID, CREDIT
 def check_auth():
     def decorator(func):
         async def wrapper(client: Client, message: Message, *args, **kwargs):
-            from db import db
+            from db import database as db
             if not db.is_authorized(message.from_user.id if message.from_user else 0):
                 await message.reply_text(
                     "**❌ Access Denied!**\n\n"
@@ -26,7 +26,7 @@ def check_auth():
 
 
 async def add_auth_cmd(client: Client, message: Message):
-    from db import db
+    from db import database as db
     if not message.from_user or message.from_user.id != OWNER_ID:
         await message.reply_text("⛔ Owner only.")
         return
@@ -64,7 +64,7 @@ async def add_auth_cmd(client: Client, message: Message):
 
 
 async def rm_auth_cmd(client: Client, message: Message):
-    from db import db
+    from db import database as db
     if not message.from_user or message.from_user.id != OWNER_ID:
         await message.reply_text("⛔ Owner only.")
         return
@@ -91,7 +91,7 @@ async def rm_auth_cmd(client: Client, message: Message):
 
 
 async def list_users_cmd(client: Client, message: Message):
-    from db import db
+    from db import database as db
     if not message.from_user or message.from_user.id != OWNER_ID:
         await message.reply_text("⛔ Owner only.")
         return
@@ -116,7 +116,7 @@ async def list_users_cmd(client: Client, message: Message):
 
 
 async def my_plan_cmd(client: Client, message: Message):
-    from db import db
+    from db import database as db
     if not message.from_user:
         return
     uid = message.from_user.id
