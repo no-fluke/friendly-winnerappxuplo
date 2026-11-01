@@ -11,7 +11,7 @@ from pyrogram import Client
 from pyrogram.errors import FloodWait, RPCError
 import asyncio
 
-from db import db
+from db import database as db
 
 log = logging.getLogger(__name__)
 
