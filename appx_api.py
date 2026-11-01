@@ -446,6 +446,13 @@ def _session(token: str = None, user_id: str = None) -> requests.Session:
     return s
 
 
+def _uid(token: str, user_id: str = None) -> str:
+    """Return user_id; auto-extract from JWT when not supplied."""
+    if user_id:
+        return str(user_id)
+    return extract_user_id_from_jwt(token)
+
+
 def _api_get(s: requests.Session, url: str, params: dict = None,
              retries: int = 3) -> dict:
     """
@@ -566,13 +573,15 @@ def login_with_credentials(domain: str, email: str, password: str) -> dict:
 #  COURSE / CONTENT API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_courses(domain: str, token: str, user_id: str) -> list:
+def get_courses(domain: str, token: str, user_id: str = None) -> list:
     """
     Purchased courses for this user.
     Tries /get/mycoursev2 first, falls back to /get/get_all_purchases.
+    user_id is optional — auto-extracted from the JWT when omitted.
     """
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
 
     r = _api_get(s, f"{base}/get/mycoursev2",
                  params={"userid": user_id, "type": "all"})
@@ -588,19 +597,21 @@ def get_courses(domain: str, token: str, user_id: str) -> list:
     return courses
 
 
-def get_subjects(domain: str, token: str, user_id: str,
-                 course_id: str) -> list:
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
+def get_subjects(domain: str, token: str, course_id: str,
+                 user_id: str = None) -> list:
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
     r    = _api_get(s, f"{base}/get/allsubjectfrmlivecourseclass",
                     params={"courseid": course_id, "start": -1})
     return r.get("data", [])
 
 
-def get_topics(domain: str, token: str, user_id: str,
-               course_id: str, subject_id: str) -> list:
-    base  = f"https://{domain}" if not domain.startswith("http") else domain
-    s     = _session(token, user_id)
+def get_topics(domain: str, token: str, course_id: str, subject_id: str,
+               user_id: str = None) -> list:
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
     r     = _api_get(s, f"{base}/get/alltopicfrmlivecourseclass",
                      params={"courseid": course_id, "subjectid": subject_id,
                              "start": -1})
@@ -608,10 +619,12 @@ def get_topics(domain: str, token: str, user_id: str,
     return sorted(items, key=lambda x: x.get("topicid", 0))
 
 
-def get_lectures(domain: str, token: str, user_id: str,
-                 course_id: str, subject_id: str, topic_id: str) -> list:
-    base  = f"https://{domain}" if not domain.startswith("http") else domain
-    s     = _session(token, user_id)
+def get_lectures(domain: str, token: str, course_id: str,
+                 subject_id: str, topic_id: str,
+                 user_id: str = None) -> list:
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
     r     = _api_get(s,
                      f"{base}/get/livecourseclassbycoursesubtopconceptapiv3",
                      params={"courseid":  course_id,
@@ -623,23 +636,25 @@ def get_lectures(domain: str, token: str, user_id: str,
     return sorted(items, key=lambda x: x.get("id", 0))
 
 
-def get_folder_contents(domain: str, token: str, user_id: str,
-                        course_id: str, parent_id) -> list:
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
+def get_folder_contents(domain: str, token: str, course_id: str,
+                        parent_id, user_id: str = None) -> list:
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
     r    = _api_get(s, f"{base}/get/folder_contentsv2",
                     params={"course_id": course_id, "parent_id": parent_id})
     return r.get("data", [])
 
 
-def get_video_details(domain: str, token: str, user_id: str,
-                      course_id: str, video_id: str) -> dict:
+def get_video_details(domain: str, token: str, course_id: str,
+                      video_id: str, user_id: str = None) -> dict:
     """
     Full video detail: encrypted_links[], download_links[], pdf_link, etc.
     Endpoint: /get/fetchVideoDetailsById  (HAR-verified from 34568.py)
     """
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
     r    = _api_get(s, f"{base}/get/fetchVideoDetailsById",
                     params={"course_id":        course_id,
                             "video_id":         video_id,
@@ -652,16 +667,17 @@ def get_video_details(domain: str, token: str, user_id: str,
 #  QUIZ API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_quiz_questions(domain: str, token: str, user_id: str,
-                       quiz_id: str) -> list:
+def get_quiz_questions(domain: str, token: str, quiz_id: str,
+                       user_id: str = None) -> list:
     """
     Fetch quiz questions for a lecture quiz.
     Tries 4 endpoint variants — same fallback chain as fetch_quiz() in 34568.py.
 
     Primary (HAR-confirmed): /get/quizquestion?start=-1&quizid=<id>
     """
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
 
     endpoints = [
         f"{base}/get/quizquestion?start=-1&quizid={quiz_id}",
@@ -691,14 +707,15 @@ def get_quiz_questions(domain: str, token: str, user_id: str,
 #  TEST SERIES API
 # ══════════════════════════════════════════════════════════════════════════════
 
-def get_test_series(domain: str, token: str, user_id: str,
-                    course_id: str) -> list:
+def get_test_series(domain: str, token: str, course_id: str,
+                    user_id: str = None) -> list:
     """
     /get/test_seriesbycourseid — all test series inside a batch/course.
     """
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
-    r    = _api_get(s, f"{base}/get/test_seriesbycourseid",
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
+    r       = _api_get(s, f"{base}/get/test_seriesbycourseid",
                     params={"start":              -1,
                             "userid":             user_id,
                             "courseid":           course_id,
@@ -707,24 +724,26 @@ def get_test_series(domain: str, token: str, user_id: str,
     return data if isinstance(data, list) else []
 
 
-def get_testseries_subjects(domain: str, token: str, user_id: str,
-                             series_id: str) -> list:
+def get_testseries_subjects(domain: str, token: str, series_id: str,
+                             user_id: str = None) -> list:
     """Subjects/topics inside a test series."""
-    base = f"https://{domain}" if not domain.startswith("http") else domain
-    s    = _session(token, user_id)
-    r    = _api_get(s, f"{base}/get/testseries_subjects",
+    base    = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id = _uid(token, user_id)
+    s       = _session(token, user_id)
+    r       = _api_get(s, f"{base}/get/testseries_subjects",
                     params={"testseries_id": series_id})
     data = r.get("data") or r.get("subjects") or r.get("result") or []
     return data if isinstance(data, list) else []
 
 
-def get_testseries_tests(domain: str, token: str, user_id: str,
-                          series_id: str, subject_id: str) -> list:
+def get_testseries_tests(domain: str, token: str, series_id: str,
+                          subject_id: str, user_id: str = None) -> list:
     """
     All test titles inside one subject of a test series.
     Auto-paginates using the same logic as 34568.py.
     """
     base      = f"https://{domain}" if not domain.startswith("http") else domain
+    user_id   = _uid(token, user_id)
     s         = _session(token, user_id)
     all_tests = []
     start     = 0
@@ -750,8 +769,8 @@ def get_testseries_tests(domain: str, token: str, user_id: str,
     return all_tests
 
 
-def get_testseries_questions(domain: str, token: str, user_id: str,
-                              test: dict) -> list:
+def get_testseries_questions(domain: str, token: str, test: dict,
+                              user_id: str = None) -> list:
     """
     Fetch questions for one test-series test.
 
@@ -779,7 +798,7 @@ def get_testseries_questions(domain: str, token: str, user_id: str,
     # 2. Fallback: same /get/quizquestion endpoint used by lecture quizzes
     test_id = str(test.get("id") or test.get("test_id") or "")
     if test_id:
-        return get_quiz_questions(domain, token, user_id, test_id)
+        return get_quiz_questions(domain, token, test_id, user_id)
 
     return []
 
@@ -788,22 +807,22 @@ def get_testseries_questions(domain: str, token: str, user_id: str,
 #  COLLECT ALL LECTURES  (folder-based + subject/topic-based detection)
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _collect_folder_recursive(domain: str, token: str, user_id: str,
-                               course_id: str, parent_id,
-                               out: list) -> None:
+def _collect_folder_recursive(domain: str, token: str, course_id: str,
+                               parent_id, out: list,
+                               user_id: str = None) -> None:
     """Recursively walk folder_contentsv2 and collect non-folder items."""
-    items = get_folder_contents(domain, token, user_id, course_id, parent_id)
+    items = get_folder_contents(domain, token, course_id, parent_id, user_id)
     for item in items:
         if (item.get("material_type") or "").upper() == "FOLDER":
             _collect_folder_recursive(
-                domain, token, user_id, course_id, item["id"], out)
+                domain, token, course_id, item["id"], out, user_id)
         else:
             out.append(item)
         time.sleep(0.1)
 
 
-def collect_all_lectures(domain: str, token: str, user_id: str,
-                          course_id: str,
+def collect_all_lectures(domain: str, token: str, course_id: str,
+                          user_id: str = None,
                           subject_ids: list = None,
                           topic_ids: list = None) -> list:
     """
@@ -820,18 +839,18 @@ def collect_all_lectures(domain: str, token: str, user_id: str,
     Returns a flat list of lecture item dicts, each annotated with
     "_subject" and "_topic" keys.
     """
+    uid        = _uid(token, user_id)
     lectures: list = []
 
     # ── Folder-based course detection ──────────────────────────────────
-    folder_data = get_folder_contents(domain, token, user_id, course_id, -1)
+    folder_data = get_folder_contents(domain, token, course_id, -1, uid)
     if folder_data:
         log.info("Folder-based course detected — walking recursively")
-        _collect_folder_recursive(domain, token, user_id, course_id,
-                                  -1, lectures)
+        _collect_folder_recursive(domain, token, course_id, -1, lectures, uid)
         return lectures
 
     # ── Subject → Topic → Lectures hierarchy ───────────────────────────
-    subjects = get_subjects(domain, token, user_id, course_id)
+    subjects = get_subjects(domain, token, course_id, uid)
     if subject_ids is not None:
         sid_set  = {str(x) for x in subject_ids}
         subjects = [s for s in subjects
@@ -842,7 +861,7 @@ def collect_all_lectures(domain: str, token: str, user_id: str,
         sname = sub.get("subject_name", "")
         time.sleep(0.3)
 
-        topics = get_topics(domain, token, user_id, course_id, si)
+        topics = get_topics(domain, token, course_id, si, uid)
         if topic_ids is not None:
             tid_set = {str(x) for x in topic_ids}
             topics  = [t for t in topics
@@ -853,7 +872,7 @@ def collect_all_lectures(domain: str, token: str, user_id: str,
             tn   = topic.get("topic_name", "")
             time.sleep(0.3)
 
-            lecs = get_lectures(domain, token, user_id, course_id, si, ti)
+            lecs = get_lectures(domain, token, course_id, si, ti, uid)
             log.info("  %s / %s: %d lectures", sname, tn, len(lecs))
             for lec in lecs:
                 lec["_subject"] = sname
@@ -867,8 +886,8 @@ def collect_all_lectures(domain: str, token: str, user_id: str,
 #  HIGH-LEVEL RESOLVER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def resolve_lecture(domain: str, token: str, user_id: str,
-                    course_id: str, video_id: str,
+def resolve_lecture(domain: str, token: str, course_id: str, video_id: str,
+                    user_id: str = None,
                     prefer_quality: str = "720p") -> dict:
     """
     Fetch full video details and return everything the downloader needs.
