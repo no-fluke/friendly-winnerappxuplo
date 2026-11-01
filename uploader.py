@@ -1,7 +1,8 @@
 """
-uploader.py — Upload files to Telegram supergroup (forum topics) via Pyrogram.
-Bot must be admin in the supergroup with 'manage_topics' permission.
+uploader.py — Upload files to a Telegram channel/supergroup (forum topics) via Pyrogram.
+Bot must be admin in the target chat with 'manage_topics' permission for topic uploads.
 Uses MTProto (Pyrogram) so files up to 2 GB are supported — no 50 MB limit.
+channel_id is now passed dynamically per-job (not hardcoded from env).
 """
 
 import os
@@ -11,15 +12,16 @@ from pyrogram.errors import FloodWait, RPCError
 import asyncio
 
 from db import db
-from vars import SUPERGROUP_ID
 
 log = logging.getLogger(__name__)
 
-# In-process topic cache (MongoDB is the durable store)
+# In-process topic cache: keyed by (job_id, topic_name)
 _topic_cache: dict[str, int] = {}
 
 
-async def get_or_create_topic(app: Client, job_id: str, topic_name: str) -> int:
+async def get_or_create_topic(
+    app: Client, channel_id: int, job_id: str, topic_name: str
+) -> int | None:
     """Return forum thread_id for topic_name; create if not exists."""
     cache_key = f"{job_id}::{topic_name}"
     if cache_key in _topic_cache:
@@ -30,29 +32,29 @@ async def get_or_create_topic(app: Client, job_id: str, topic_name: str) -> int:
         _topic_cache[cache_key] = stored
         return stored
 
-    # Create via Pyrogram
     try:
-        topic = await app.create_forum_topic(SUPERGROUP_ID, topic_name[:128])
+        topic = await app.create_forum_topic(channel_id, topic_name[:128])
         topic_id = topic.id
         _topic_cache[cache_key] = topic_id
         db.set_topic_id(job_id, topic_name, topic_id)
-        log.info("Created topic '%s' → thread_id=%d", topic_name, topic_id)
+        log.info("Created topic '%s' → thread_id=%d in chat %d", topic_name, topic_id, channel_id)
         return topic_id
     except RPCError as e:
         log.error("create_forum_topic error: %s", e)
-        return None  # fall back to no topic (General)
+        return None  # fall back to General (no topic)
 
 
 async def upload_file(
     app: Client,
     job_id: str,
+    channel_id: int,           # ← now passed per-job, not from env
     topic_name: str | None,
     file_path: str,
     caption: str = "",
-    progress_msg=None,  # Pyrogram Message to edit with progress
+    progress_msg=None,
 ) -> bool:
     """
-    Upload file_path to the supergroup. If topic_name is set, uploads to
+    Upload file_path to channel_id. If topic_name is set, uploads to
     that forum topic. Returns True on success.
     """
     if not os.path.exists(file_path):
@@ -63,10 +65,10 @@ async def upload_file(
     fname   = os.path.basename(file_path)
     size_mb = os.path.getsize(file_path) / (1024 * 1024)
 
-    # Resolve topic
+    # Resolve topic thread_id
     thread_id = None
     if topic_name:
-        thread_id = await get_or_create_topic(app, job_id, topic_name)
+        thread_id = await get_or_create_topic(app, channel_id, job_id, topic_name)
 
     kw = {}
     if thread_id:
@@ -94,7 +96,7 @@ async def upload_file(
     try:
         if is_video:
             await app.send_video(
-                chat_id=SUPERGROUP_ID,
+                chat_id=channel_id,
                 video=file_path,
                 caption=cap,
                 supports_streaming=True,
@@ -103,7 +105,7 @@ async def upload_file(
             )
         elif ext == ".pdf":
             await app.send_document(
-                chat_id=SUPERGROUP_ID,
+                chat_id=channel_id,
                 document=file_path,
                 caption=cap,
                 progress=_progress,
@@ -111,14 +113,14 @@ async def upload_file(
             )
         elif ext in (".jpg", ".jpeg", ".png", ".webp"):
             await app.send_photo(
-                chat_id=SUPERGROUP_ID,
+                chat_id=channel_id,
                 photo=file_path,
                 caption=cap,
                 **kw,
             )
         elif ext in (".mp3", ".wav", ".m4a", ".ogg"):
             await app.send_audio(
-                chat_id=SUPERGROUP_ID,
+                chat_id=channel_id,
                 audio=file_path,
                 caption=cap,
                 progress=_progress,
@@ -126,19 +128,19 @@ async def upload_file(
             )
         else:
             await app.send_document(
-                chat_id=SUPERGROUP_ID,
+                chat_id=channel_id,
                 document=file_path,
                 caption=cap,
                 progress=_progress,
                 **kw,
             )
-        log.info("Uploaded %s (%.1f MB) → topic=%s", fname, size_mb, topic_name)
+        log.info("Uploaded %s (%.1f MB) → chat=%d topic=%s", fname, size_mb, channel_id, topic_name)
         return True
 
     except FloodWait as e:
         log.warning("FloodWait %ds", e.value)
         await asyncio.sleep(e.value)
-        return await upload_file(app, job_id, topic_name, file_path, caption, progress_msg)
+        return await upload_file(app, job_id, channel_id, topic_name, file_path, caption, progress_msg)
     except RPCError as e:
         log.error("Upload RPCError for %s: %s", fname, e)
         return False
@@ -148,17 +150,17 @@ async def upload_file(
 
 
 async def send_text_to_topic(
-    app: Client, job_id: str, topic_name: str | None, text: str
+    app: Client, channel_id: int, job_id: str, topic_name: str | None, text: str
 ) -> bool:
-    """Send a plain text message into a forum topic."""
+    """Send a plain text message into a forum topic (or General)."""
     thread_id = None
     if topic_name:
-        thread_id = await get_or_create_topic(app, job_id, topic_name)
+        thread_id = await get_or_create_topic(app, channel_id, job_id, topic_name)
     kw = {}
     if thread_id:
         kw["message_thread_id"] = thread_id
     try:
-        await app.send_message(SUPERGROUP_ID, text, **kw)
+        await app.send_message(channel_id, text, **kw)
         return True
     except Exception as e:
         log.error("send_text_to_topic: %s", e)
