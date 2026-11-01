@@ -9,6 +9,7 @@ from datetime import datetime
 
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
+from pyromod import listen
 
 from vars import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, SUPERGROUP_ID, CREDIT, DOWNLOAD_DIR
 from db import database as db
@@ -26,30 +27,6 @@ app = Client("appx_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 _cancel: dict[int, bool] = {}
 _active: dict[int, bool] = {}
 
-# ── Pure Pyrogram listener (replaces pyromod) ─────────────────────────────────
-_listeners: dict[int, asyncio.Future] = {}
-
-@app.on_message(filters.private & ~filters.command(
-    ["start", "stop", "status", "appx", "id", "addauth", "rmauth", "users", "plan"]
-))
-async def _resolve_listener(client: Client, m: Message):
-    chat_id = m.chat.id
-    if chat_id in _listeners and not _listeners[chat_id].done():
-        _listeners[chat_id].set_result(m)
-
-async def _ask(chat_id: int, timeout: int = 60) -> Message:
-    """Wait for the next message from a chat."""
-    loop = asyncio.get_event_loop()
-    fut: asyncio.Future = loop.create_future()
-    _listeners[chat_id] = fut
-    try:
-        return await asyncio.wait_for(fut, timeout=timeout)
-    except asyncio.TimeoutError:
-        raise asyncio.TimeoutError
-    finally:
-        _listeners.pop(chat_id, None)
-
-# ─────────────────────────────────────────────────────────────────────────────
 
 def is_auth(user_id: int) -> bool:
     return user_id == OWNER_ID or db.is_authorized(user_id)
@@ -120,7 +97,7 @@ async def cmd_appx(client: Client, m: Message):
         "**Step 1/7 — AppX Domain**\n\nSend the API domain.\nExample: `parmaracademyapi.teachx.in`"
     )
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         domain_raw = reply.text.strip() if reply.text else None
     except asyncio.TimeoutError:
@@ -136,7 +113,7 @@ async def cmd_appx(client: Client, m: Message):
         "**Step 2/7 — Login Method**\n\n`1` → JWT token\n`2` → Email + password"
     )
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         login_choice = reply.text.strip() if reply.text else "2"
     except asyncio.TimeoutError:
@@ -146,7 +123,7 @@ async def cmd_appx(client: Client, m: Message):
     if login_choice == "1":
         editable = await m.reply_text("**Send your JWT token:**")
         try:
-            reply = await _ask(chat_id, timeout=120)
+            reply: Message = await app.listen(chat_id, timeout=120)
             await reply.delete(); await editable.delete()
             token_text = reply.text.strip() if reply.text else None
         except asyncio.TimeoutError:
@@ -163,7 +140,7 @@ async def cmd_appx(client: Client, m: Message):
     else:
         editable = await m.reply_text("**Send your email:**")
         try:
-            reply = await _ask(chat_id, timeout=60)
+            reply: Message = await app.listen(chat_id, timeout=60)
             await reply.delete(); await editable.delete()
             email = reply.text.strip() if reply.text else None
         except asyncio.TimeoutError:
@@ -172,7 +149,7 @@ async def cmd_appx(client: Client, m: Message):
 
         editable = await m.reply_text("**Send your password:**")
         try:
-            reply = await _ask(chat_id, timeout=60)
+            reply: Message = await app.listen(chat_id, timeout=60)
             await reply.delete(); await editable.delete()
             password = reply.text.strip() if reply.text else None
         except asyncio.TimeoutError:
@@ -210,7 +187,7 @@ async def cmd_appx(client: Client, m: Message):
 
     editable = await m.reply_text("Send course number:")
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         course_idx_raw = reply.text.strip() if reply.text else None
     except asyncio.TimeoutError:
@@ -248,7 +225,7 @@ async def cmd_appx(client: Client, m: Message):
         f"**Subjects in {course_name}:**\n{subj_list}\n\nSend number(s) separated by commas, or `all`:"
     )
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         subj_choice = reply.text.strip() if reply.text else None
     except asyncio.TimeoutError:
@@ -270,7 +247,7 @@ async def cmd_appx(client: Client, m: Message):
     # Step 5: Batch name
     editable = await m.reply_text("**Step 5/7 — Batch Name**\n\nEnter batch name or /d for default:")
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         b_name_raw = reply.text.strip() if reply.text else "/d"
     except asyncio.TimeoutError:
@@ -282,7 +259,7 @@ async def cmd_appx(client: Client, m: Message):
         "**Step 6/7 — Video Quality**\n\n`144` / `240` / `360` / `480` / `720` / `1080`\nor /d for 720:"
     )
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         quality_raw = reply.text.strip() if reply.text else "/d"
     except asyncio.TimeoutError:
@@ -295,7 +272,7 @@ async def cmd_appx(client: Client, m: Message):
         "**Topic-wise upload?**\n\nSend `yes` to create forum topics.\nSend `no` to upload to General."
     )
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         topic_wise_raw = reply.text.strip() if reply.text else "no"
     except asyncio.TimeoutError:
@@ -312,7 +289,7 @@ async def cmd_appx(client: Client, m: Message):
         f"{default_hint}"
     )
     try:
-        reply = await _ask(chat_id, timeout=60)
+        reply: Message = await app.listen(chat_id, timeout=60)
         await reply.delete(); await editable.delete()
         channel_raw = reply.text.strip() if reply.text else "/d"
     except asyncio.TimeoutError:
@@ -586,30 +563,22 @@ async def _run_job(job: dict):
         pass
 
 
-async def resume_pending_jobs():
-    pending = db.get_pending_jobs()
-    if not pending:
-        return
-    log.info("Resuming %d interrupted job(s)...", len(pending))
-    for job in pending:
-        fresh = db.get_job(job["job_id"])
-        if fresh:
-            asyncio.ensure_future(_run_job(fresh))
-
-
-async def main():
+async def on_start():
     ensure_dir(DOWNLOAD_DIR)
-    await app.start()
     register_auth_handlers(app)
     log.info("AppX Bot started. Owner: %d", OWNER_ID)
     try:
         await app.send_message(OWNER_ID, "🤖 **AppX Bot started!** Use /appx to begin.")
     except Exception:
         pass
-    await resume_pending_jobs()
-    await idle()
-    await app.stop()
+    # Resume pending jobs
+    pending = db.get_pending_jobs()
+    if pending:
+        log.info("Resuming %d interrupted job(s)...", len(pending))
+        for job in pending:
+            fresh = db.get_job(job["job_id"])
+            if fresh:
+                asyncio.ensure_future(_run_job(fresh))
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
+app.run(on_start())
