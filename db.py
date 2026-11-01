@@ -1,28 +1,28 @@
 """
 db.py — MongoDB wrapper for AppX Bot.
-Handles:
-  - Auth user management
-  - Job state persistence (resume-on-restart)
-  - Forum topic ID cache (persistent across restarts)
 """
-
 import time
 import certifi
-from datetime import datetime
+import colorama
+from colorama import Fore, Style
+from datetime import datetime, timedelta
+from typing import Optional
 from pymongo import MongoClient, errors
 from vars import MONGO_URL, OWNER_ID
 
+colorama.init()
+
 
 class Database:
-    def __init__(self):
+    def __init__(self, max_retries: int = 3, retry_delay: float = 2.0):
         self.client = None
         self.db     = None
-        self._connect()
+        self._connect(max_retries, retry_delay)
 
-    def _connect(self):
-        for attempt in range(1, 4):
+    def _connect(self, max_retries, retry_delay):
+        for attempt in range(1, max_retries + 1):
             try:
-                print(f"[DB] Connecting to MongoDB (attempt {attempt}/3)...")
+                print(f"{Fore.YELLOW}⌛ Attempt {attempt}/{max_retries}: Connecting to MongoDB...{Style.RESET_ALL}")
                 self.client = MongoClient(
                     MONGO_URL,
                     serverSelectionTimeoutMS=20000,
@@ -34,87 +34,92 @@ class Database:
                 )
                 self.client.server_info()
                 self.db = self.client["appx_bot"]
-                print("[DB] ✓ Connected!")
+                print(f"{Fore.GREEN}✓ MongoDB Connected!{Style.RESET_ALL}")
                 self._ensure_owner()
                 return
             except errors.ServerSelectionTimeoutError as e:
-                print(f"[DB] ✗ Attempt {attempt} failed: {e}")
-                if attempt < 3:
-                    time.sleep(2)
+                print(f"{Fore.RED}✕ Attempt {attempt} failed: {e}{Style.RESET_ALL}")
+                if attempt < max_retries:
+                    time.sleep(retry_delay)
                 else:
-                    raise ConnectionError("MongoDB connection failed after 3 attempts") from e
+                    raise ConnectionError(f"MongoDB connection failed after {max_retries} attempts") from e
 
     def _ensure_owner(self):
         if OWNER_ID:
             self.db["users"].update_one(
                 {"user_id": OWNER_ID},
-                {"$setOnInsert": {"user_id": OWNER_ID, "added_on": datetime.utcnow(), "is_owner": True}},
+                {"$setOnInsert": {
+                    "user_id": OWNER_ID, "name": "Owner",
+                    "added_on": datetime.utcnow(), "is_owner": True,
+                    "expiry_date": datetime(2099, 12, 31),
+                }},
                 upsert=True,
             )
 
-    # ── Auth ──────────────────────────────────────────────────────────────────
-
     def is_authorized(self, user_id: int) -> bool:
+        if user_id == OWNER_ID:
+            return True
         doc = self.db["users"].find_one({"user_id": user_id})
-        return bool(doc)
+        if not doc:
+            return False
+        expiry = doc.get("expiry_date")
+        if expiry and expiry < datetime.utcnow():
+            return False
+        return True
 
-    def add_user(self, user_id: int):
-        self.db["users"].update_one(
-            {"user_id": user_id},
-            {"$setOnInsert": {"user_id": user_id, "added_on": datetime.utcnow()}},
-            upsert=True,
-        )
+    def add_user(self, user_id: int, name: str = "", days: int = 36500):
+        try:
+            expiry = datetime.utcnow() + timedelta(days=days)
+            self.db["users"].update_one(
+                {"user_id": user_id},
+                {"$set": {
+                    "user_id": user_id, "name": name or f"User {user_id}",
+                    "expiry_date": expiry, "added_on": datetime.utcnow(), "days": days,
+                }},
+                upsert=True,
+            )
+            return True, expiry
+        except Exception as e:
+            print(f"{Fore.RED}Add user error: {e}{Style.RESET_ALL}")
+            return False, None
 
-    def remove_user(self, user_id: int):
-        self.db["users"].delete_one({"user_id": user_id})
+    def remove_user(self, user_id: int) -> bool:
+        result = self.db["users"].delete_one({"user_id": user_id})
+        return result.deleted_count > 0
 
     def list_users(self) -> list:
-        return [d["user_id"] for d in self.db["users"].find({}, {"user_id": 1})]
-
-    # ── Job state (resume-on-restart) ─────────────────────────────────────────
+        return list(self.db["users"].find(
+            {"user_id": {"$ne": OWNER_ID}},
+            {"_id": 0, "user_id": 1, "name": 1, "expiry_date": 1}
+        ))
 
     def save_job(self, job: dict):
-        """Upsert a job document. job must have 'job_id' key."""
-        self.db["jobs"].update_one(
-            {"job_id": job["job_id"]},
-            {"$set": job},
-            upsert=True,
-        )
+        self.db["jobs"].update_one({"job_id": job["job_id"]}, {"$set": job}, upsert=True)
 
-    def get_job(self, job_id: str) -> dict | None:
+    def get_job(self, job_id: str) -> Optional[dict]:
         return self.db["jobs"].find_one({"job_id": job_id})
 
     def get_pending_jobs(self) -> list:
-        """Return all jobs that are not completed."""
         return list(self.db["jobs"].find({"status": {"$in": ["pending", "running"]}}))
 
     def mark_item_done(self, job_id: str, item_index: int):
-        self.db["jobs"].update_one(
-            {"job_id": job_id},
-            {"$set": {f"progress.{item_index}": "done"}},
-        )
+        self.db["jobs"].update_one({"job_id": job_id}, {"$set": {f"progress.{item_index}": "done"}})
 
     def update_job_status(self, job_id: str, status: str):
-        self.db["jobs"].update_one(
-            {"job_id": job_id},
-            {"$set": {"status": status, "updated_at": datetime.utcnow()}},
-        )
+        self.db["jobs"].update_one({"job_id": job_id},
+            {"$set": {"status": status, "updated_at": datetime.utcnow()}})
 
     def delete_job(self, job_id: str):
         self.db["jobs"].delete_one({"job_id": job_id})
 
-    # ── Forum topic cache ────────────────────────────────────────────────────
-
-    def get_topic_id(self, job_id: str, topic_name: str) -> int | None:
+    def get_topic_id(self, job_id: str, topic_name: str) -> Optional[int]:
         doc = self.db["topics"].find_one({"job_id": job_id, "topic_name": topic_name})
         return doc["topic_id"] if doc else None
 
     def set_topic_id(self, job_id: str, topic_name: str, topic_id: int):
         self.db["topics"].update_one(
             {"job_id": job_id, "topic_name": topic_name},
-            {"$set": {"topic_id": topic_id}},
-            upsert=True,
-        )
+            {"$set": {"topic_id": topic_id}}, upsert=True)
 
 
-db = Database()
+db = Database(max_retries=3, retry_delay=2)
