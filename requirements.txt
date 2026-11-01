@@ -7,3 +7,4 @@ pycryptodome
 requests
 aiohttp
 aiofiles
+colorama
