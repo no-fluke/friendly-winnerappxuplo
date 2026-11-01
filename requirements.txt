@@ -8,3 +8,5 @@ pycryptodome
 requests
 aiohttp
 aiofiles
+colorama
+certifi
