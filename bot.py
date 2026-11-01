@@ -563,15 +563,15 @@ async def _run_job(job: dict):
         pass
 
 
-async def on_start():
+async def main():
     ensure_dir(DOWNLOAD_DIR)
+    await app.start()
     register_auth_handlers(app)
     log.info("AppX Bot started. Owner: %d", OWNER_ID)
     try:
         await app.send_message(OWNER_ID, "🤖 **AppX Bot started!** Use /appx to begin.")
     except Exception:
         pass
-    # Resume pending jobs
     pending = db.get_pending_jobs()
     if pending:
         log.info("Resuming %d interrupted job(s)...", len(pending))
@@ -579,6 +579,8 @@ async def on_start():
             fresh = db.get_job(job["job_id"])
             if fresh:
                 asyncio.ensure_future(_run_job(fresh))
+    await idle()
+    await app.stop()
 
 
-app.run(on_start())
+app.run(main())
