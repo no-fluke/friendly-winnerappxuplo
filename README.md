@@ -32,7 +32,7 @@ You (Telegram) ──→ Bot (Pyrogram MTProto) ──→ AppX API
 
 ## One-Click Heroku Deploy
 
-[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/yourusername/appx-bot)
+[![Deploy to Heroku](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/no-fluke/friendly-winnerappxuplo).
 
 > Replace `yourusername/appx-bot` with your actual GitHub repo URL after pushing.
 
