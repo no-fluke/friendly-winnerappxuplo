@@ -1,0 +1,56 @@
+{
+  "name": "AppX Downloader Bot",
+  "description": "Telegram bot that downloads AppX/Parmar Academy courses and uploads them topic-wise to a supergroup.",
+  "keywords": ["telegram", "bot", "appx", "downloader"],
+  "website": "https://github.com/yourusername/appx-bot",
+  "repository": "https://github.com/yourusername/appx-bot",
+  "logo": "https://www.herokucdn.com/deploy/button.svg",
+  "success_url": "/",
+  "buildpacks": [
+    { "url": "https://github.com/heroku/heroku-buildpack-apt" },
+    { "url": "https://github.com/heroku/heroku-buildpack-python" }
+  ],
+  "env": {
+    "API_ID": {
+      "description": "Telegram API ID from my.telegram.org",
+      "required": true
+    },
+    "API_HASH": {
+      "description": "Telegram API Hash from my.telegram.org",
+      "required": true
+    },
+    "BOT_TOKEN": {
+      "description": "Telegram Bot Token from @BotFather",
+      "required": true
+    },
+    "OWNER_ID": {
+      "description": "Your Telegram user ID (get it from @userinfobot)",
+      "required": true
+    },
+    "SUPERGROUP_ID": {
+      "description": "Target supergroup ID (negative number, e.g. -100123456789). Topics must be enabled.",
+      "required": true
+    },
+    "MONGO_URL": {
+      "description": "MongoDB connection string (mongodb+srv://...)",
+      "required": true
+    },
+    "CREDIT": {
+      "description": "Credit text shown in captions",
+      "required": false,
+      "value": "AppX Bot"
+    },
+    "DOWNLOAD_DIR": {
+      "description": "Temp download directory on dyno",
+      "required": false,
+      "value": "/tmp/appx_downloads"
+    }
+  },
+  "formation": {
+    "worker": {
+      "quantity": 1,
+      "size": "standard-2x"
+    }
+  },
+  "addons": []
+}

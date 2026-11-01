@@ -1,0 +1,10 @@
+pyrogram==2.0.106
+pyromod==0.2.0
+TgCrypto
+motor
+pymongo[srv]
+certifi
+pycryptodome
+requests
+aiohttp
+aiofiles
