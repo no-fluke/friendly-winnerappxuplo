@@ -9,7 +9,7 @@ from datetime import datetime
 
 from pyrogram import Client, filters, idle
 from pyrogram.types import Message
-from pyromod import listen
+import pyromod
 
 from vars import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, SUPERGROUP_ID, CREDIT, DOWNLOAD_DIR
 from db import database as db
