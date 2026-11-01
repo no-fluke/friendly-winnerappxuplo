@@ -4,17 +4,18 @@ Architecture: Pyrogram (api_id + api_hash + bot_token)
               pyromod for interactive listen()
               aria2c 16 connections for downloads
               MongoDB for job persistence + resume-on-restart
-              Bot is admin in supergroup → direct MTProto upload (up to 2 GB)
+              Dynamic channel ID — user provides it during /appx session
+              Bot must be admin in the target channel/supergroup
 
 Commands:
   /start   — welcome
   /appx    — start an AppX course download session
   /stop    — cancel current session
-  /status  — show current job
+  /status  — show active jobs
+  /id      — show your Telegram ID (also works in channels/groups)
   /addauth — (owner) add authorized user
   /rmauth  — (owner) remove authorized user
   /users   — (owner) list authorized users
-  /id      — show your Telegram ID
 """
 
 import os
@@ -25,8 +26,8 @@ import logging
 import traceback
 from datetime import datetime
 
-from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram import Client, filters, idle
+from pyrogram.types import Message
 import pyromod  # patches Client with .listen()
 
 from vars import API_ID, API_HASH, BOT_TOKEN, OWNER_ID, SUPERGROUP_ID, CREDIT, DOWNLOAD_DIR
@@ -52,7 +53,7 @@ app = Client(
     bot_token=BOT_TOKEN,
 )
 
-# ── Per-user cancel flag ──────────────────────────────────────────────────────
+# ── Per-user state ────────────────────────────────────────────────────────────
 _cancel: dict[int, bool] = {}
 _active: dict[int, bool] = {}
 
@@ -63,29 +64,29 @@ def is_auth(user_id: int) -> bool:
     return user_id == OWNER_ID or db.is_authorized(user_id)
 
 
-async def ask(m: Message, text: str, timeout: int = 60) -> str | None:
-    """Edit m with text, wait for user reply. Returns text or None on timeout."""
-    editable = await m.reply_text(text)
+async def ask(chat_id: int, text: str, timeout: int = 60) -> str | None:
+    """Send a message then wait for a reply. Returns reply text or None on timeout."""
+    sent = await app.send_message(chat_id, text)
     try:
-        reply: Message = await app.listen(m.chat.id, timeout=timeout)
+        reply: Message = await app.listen(chat_id, timeout=timeout)
         await reply.delete()
-        await editable.delete()
+        await sent.delete()
         return reply.text.strip() if reply.text else None
     except asyncio.TimeoutError:
-        await editable.edit("⌛ Timed out.")
+        await sent.edit_text("⌛ Timed out. Please restart with /appx.")
         return None
 
 
 # ── /start ────────────────────────────────────────────────────────────────────
 
-@app.on_message(filters.command("start"))
+@app.on_message(filters.command("start") & filters.private)
 async def cmd_start(_, m: Message):
     uid = m.from_user.id if m.from_user else 0
     auth_status = "✅ Authorized" if is_auth(uid) else "❌ Not authorized"
     await m.reply_text(
         f"**👋 AppX Downloader Bot**\n\n"
         f"Download full AppX / Parmar Academy courses and upload them "
-        f"topic-wise to your Telegram supergroup.\n\n"
+        f"topic-wise to your Telegram channel or supergroup.\n\n"
         f"**Your status:** {auth_status}\n\n"
         f"Use /appx to start a download session.\n"
         f"Bot by **{CREDIT}**",
@@ -94,13 +95,11 @@ async def cmd_start(_, m: Message):
 
 # ── /stop ─────────────────────────────────────────────────────────────────────
 
-@app.on_message(filters.command("stop"))
+@app.on_message(filters.command("stop") & filters.private)
 async def cmd_stop(_, m: Message):
     uid = m.from_user.id if m.from_user else 0
     if _active.get(uid):
         _cancel[uid] = True
-        # Find and delete this user's running job from DB right away
-        # so a restart won't resume it
         for job in db.get_pending_jobs():
             if job.get("user_id") == uid:
                 db.delete_job(job["job_id"])
@@ -111,7 +110,7 @@ async def cmd_stop(_, m: Message):
 
 # ── /status ───────────────────────────────────────────────────────────────────
 
-@app.on_message(filters.command("status"))
+@app.on_message(filters.command("status") & filters.private)
 async def cmd_status(_, m: Message):
     uid = m.from_user.id if m.from_user else 0
     if not is_auth(uid):
@@ -129,22 +128,36 @@ async def cmd_status(_, m: Message):
     await m.reply_text("**Active jobs:**\n" + "\n".join(lines))
 
 
+# ── /id ───────────────────────────────────────────────────────────────────────
+
+@app.on_message(filters.command("id"))
+async def cmd_id(_, m: Message):
+    uid = m.from_user.id if m.from_user else "unknown"
+    cid = m.chat.id
+    await m.reply_text(
+        f"👤 **Your ID:** `{uid}`\n"
+        f"💬 **Chat ID:** `{cid}`"
+    )
+
+
 # ── /appx ─────────────────────────────────────────────────────────────────────
 
-@app.on_message(filters.command("appx"))
+@app.on_message(filters.command("appx") & filters.private)
 async def cmd_appx(_, m: Message):
     uid = m.from_user.id if m.from_user else 0
     if not is_auth(uid):
-        await m.reply_text("⛔ Not authorized. Ask the owner to add you.")
+        await m.reply_text("⛔ Not authorized. Ask the owner to add you with /addauth.")
         return
     if _active.get(uid):
         await m.reply_text("⚠️ You already have an active session. Send /stop first.")
         return
 
+    chat_id = m.chat.id
+
     # ── Step 1: API domain ────────────────────────────────────────────────────
     domain_raw = await ask(
-        m,
-        "**Step 1/6 — AppX Domain**\n\n"
+        chat_id,
+        "**Step 1/7 — AppX Domain**\n\n"
         "Send the API domain of your AppX platform.\n"
         "Example: `parmaracademyapi.teachx.in`",
         timeout=60,
@@ -155,8 +168,8 @@ async def cmd_appx(_, m: Message):
 
     # ── Step 2: Login method ─────────────────────────────────────────────────
     login_choice = await ask(
-        m,
-        "**Step 2/6 — Login Method**\n\n"
+        chat_id,
+        "**Step 2/7 — Login Method**\n\n"
         "Send:\n`1` → I already have a JWT token\n`2` → Login with email + password",
         timeout=60,
     )
@@ -164,7 +177,7 @@ async def cmd_appx(_, m: Message):
         return
 
     if login_choice == "1":
-        token_text = await ask(m, "**Send your JWT token:**", timeout=120)
+        token_text = await ask(chat_id, "**Send your JWT token:**", timeout=120)
         if not token_text:
             return
         try:
@@ -173,10 +186,10 @@ async def cmd_appx(_, m: Message):
             await m.reply_text(f"❌ Error: {e}")
             return
     else:
-        email = await ask(m, "**Send your email:**", timeout=60)
+        email = await ask(chat_id, "**Send your email:**", timeout=60)
         if not email:
             return
-        password = await ask(m, "**Send your password:**", timeout=60)
+        password = await ask(chat_id, "**Send your password:**", timeout=60)
         if not password:
             return
         try:
@@ -204,9 +217,9 @@ async def cmd_appx(_, m: Message):
         f"`{i+1}` — {c.get('courseName', c.get('name', f'Course {i+1}'))}"
         for i, c in enumerate(courses)
     )
-    await status_msg.edit(f"**Available Courses:**\n{course_list}\n\nSend the number:")
+    await status_msg.edit(f"**Available Courses:**\n{course_list}")
 
-    course_idx_raw = await ask(m, "Send course number:", timeout=60)
+    course_idx_raw = await ask(chat_id, "Send course number:", timeout=60)
     if not course_idx_raw or not course_idx_raw.isdigit():
         await m.reply_text("❌ Invalid selection.")
         return
@@ -214,8 +227,8 @@ async def cmd_appx(_, m: Message):
     if course_idx < 0 or course_idx >= len(courses):
         await m.reply_text("❌ Out of range.")
         return
-    course    = courses[course_idx]
-    course_id = str(course.get("id") or course.get("courseId") or course.get("_id", ""))
+    course      = courses[course_idx]
+    course_id   = str(course.get("id") or course.get("courseId") or course.get("_id", ""))
     course_name = course.get("courseName") or course.get("name", f"Course {course_idx+1}")
 
     # ── Step 4: Choose subjects ───────────────────────────────────────────────
@@ -236,7 +249,7 @@ async def cmd_appx(_, m: Message):
         for i, s in enumerate(subjects)
     )
     subj_choice = await ask(
-        m,
+        chat_id,
         f"**Subjects in {course_name}:**\n{subj_list}\n\n"
         "Send number(s) separated by commas, or `all`:",
         timeout=60,
@@ -255,27 +268,27 @@ async def cmd_appx(_, m: Message):
 
     # ── Step 5: Batch name ────────────────────────────────────────────────────
     b_name = await ask(
-        m,
-        "**Step 5/6 — Batch Name**\n\nEnter a name for this batch (shown in captions):",
+        chat_id,
+        "**Step 5/7 — Batch Name**\n\nEnter a name for this batch (shown in captions):",
         timeout=60,
     )
     if not b_name:
         b_name = course_name
 
-    # ── Step 6: Quality + topic-wise? ────────────────────────────────────────
+    # ── Step 6: Quality + topic-wise ─────────────────────────────────────────
     quality_raw = await ask(
-        m,
-        "**Step 6/6 — Video Quality**\n\n"
+        chat_id,
+        "**Step 6/7 — Video Quality**\n\n"
         "Send resolution: `144` / `240` / `360` / `480` / `720` / `1080`\n"
         "Or /d for default (720):",
         timeout=60,
     )
     quality = 720
-    if quality_raw and quality_raw.isdigit():
+    if quality_raw and quality_raw != "/d" and quality_raw.isdigit():
         quality = int(quality_raw)
 
     topic_wise_raw = await ask(
-        m,
+        chat_id,
         "**Topic-wise upload?**\n\n"
         "Send `yes` to create forum topics from content topic names.\n"
         "Send `no` to upload everything to General.",
@@ -283,9 +296,48 @@ async def cmd_appx(_, m: Message):
     )
     topic_wise = topic_wise_raw and topic_wise_raw.lower() in ("yes", "y", "1")
 
+    # ── Step 7: Target channel/group ─────────────────────────────────────────
+    default_hint = f"\n\nDefault (press /d): your current chat (`{chat_id}`)"
+    if SUPERGROUP_ID:
+        default_hint = f"\n\nDefault (press /d): `{SUPERGROUP_ID}` (from env)"
+
+    channel_raw = await ask(
+        chat_id,
+        "**Step 7/7 — Target Channel / Group**\n\n"
+        "<blockquote>"
+        "🔹 Make me an admin in the target channel/group.\n"
+        "🔸 Send /id inside that chat to get its ID.\n\n"
+        "Example: `-100XXXXXXXXXXX`"
+        "</blockquote>"
+        f"{default_hint}",
+        timeout=60,
+    )
+
+    if not channel_raw or channel_raw.strip() == "/d":
+        # Use env SUPERGROUP_ID if set, else fall back to current chat
+        target_channel = SUPERGROUP_ID if SUPERGROUP_ID else chat_id
+    else:
+        raw = channel_raw.strip()
+        if raw.lstrip("-").isdigit():
+            target_channel = int(raw)
+        else:
+            await m.reply_text("❌ Invalid channel ID. Must be a number like `-100XXXXXXXXXXX`.")
+            return
+
+    # Confirm the target
+    try:
+        chat_info = await app.get_chat(target_channel)
+        chat_title = chat_info.title or str(target_channel)
+    except Exception:
+        chat_title = str(target_channel)
+
+    await m.reply_text(
+        f"✅ **Target set:** `{chat_title}` (`{target_channel}`)\n\n"
+        f"⌛ Building content list..."
+    )
+
     # ── Build content list ────────────────────────────────────────────────────
-    loading = await m.reply_text("⌛ Building content list...")
-    items_all = []  # list of (topic_name, lesson_item)
+    items_all = []
 
     for subj in sel_subjects:
         subj_id   = str(subj.get("id") or subj.get("subjectId") or subj.get("_id", ""))
@@ -305,11 +357,9 @@ async def cmd_appx(_, m: Message):
                 log.warning("get_lessons failed for topic %s: %s", t_id, e)
                 continue
             for lesson in lessons:
-                lesson["_topic_name"] = t_name
+                lesson["_topic_name"]   = t_name
                 lesson["_subject_name"] = subj_name
                 items_all.append(lesson)
-
-    await loading.delete()
 
     if not items_all:
         await m.reply_text("❌ No content found.")
@@ -321,28 +371,29 @@ async def cmd_appx(_, m: Message):
         f"• Total items: **{total}**\n"
         f"• Batch: **{b_name}**\n"
         f"• Quality: **{quality}p**\n"
-        f"• Topic-wise: **{'Yes' if topic_wise else 'No'}**\n\n"
+        f"• Topic-wise: **{'Yes' if topic_wise else 'No'}**\n"
+        f"• Uploading to: **{chat_title}**\n\n"
         f"⌛ Starting download + upload..."
     )
 
-    # ── Create job in MongoDB (save everything needed to resume after restart) ─
+    # ── Create / save job in MongoDB ──────────────────────────────────────────
     job_id = str(uuid.uuid4())[:8]
     job = {
-        "job_id":      job_id,
-        "user_id":     uid,
-        "chat_id":     m.chat.id,
-        "batch_name":  b_name,
-        "course_name": course_name,
-        "total_items": total,
-        "status":      "running",
-        "quality":     quality,
-        "topic_wise":  topic_wise,
-        "progress":    {},
-        "created_at":  datetime.utcnow(),
-        # Everything needed to re-download without user interaction:
-        "domain":      domain,
-        "token":       token,
-        "items":       items_all,   # full lesson list with URLs already decrypted
+        "job_id":         job_id,
+        "user_id":        uid,
+        "chat_id":        chat_id,
+        "target_channel": target_channel,    # ← saved so resume works
+        "batch_name":     b_name,
+        "course_name":    course_name,
+        "total_items":    total,
+        "status":         "running",
+        "quality":        quality,
+        "topic_wise":     topic_wise,
+        "progress":       {},
+        "created_at":     datetime.utcnow(),
+        "domain":         domain,
+        "token":          token,
+        "items":          items_all,
     }
     db.save_job(job)
 
@@ -359,7 +410,6 @@ async def cmd_appx(_, m: Message):
             await m.reply_text("🛑 **Stopped by user.**")
             break
 
-        # Skip already done items (resume support)
         if job.get("progress", {}).get(str(idx)) == "done":
             count += 1
             continue
@@ -373,20 +423,17 @@ async def cmd_appx(_, m: Message):
         topic_name_from_api = lesson.get("_topic_name", "General")
         url = api.resolve_video_url(lesson)
 
-        # Decide topic
         if topic_wise:
-            # Try to extract from title brackets first, else use API topic
             t_name_bracket, vid_title = extract_topic_name(raw_title)
-            topic_label = t_name_bracket if t_name_bracket != "General" else topic_name_from_api
+            topic_label    = t_name_bracket if t_name_bracket != "General" else topic_name_from_api
             vid_title_clean = clean_title(vid_title)
         else:
             topic_label     = None
             vid_title_clean = clean_title(raw_title)
 
-        # Progress message to user
         try:
             prog_msg = await app.send_message(
-                m.chat.id,
+                chat_id,
                 make_progress_text(count + 1, total, vid_title_clean, b_name, topic_label, CREDIT),
             )
         except Exception:
@@ -397,10 +444,8 @@ async def cmd_appx(_, m: Message):
         try:
             if url:
                 local_file = await download(url, vid_title_clean, DOWNLOAD_DIR, quality)
-
             if not local_file:
                 raise FileNotFoundError(f"Download returned None for URL: {url}")
-
         except Exception as e:
             log.error("Download failed item %d: %s", idx, e)
             failed += 1
@@ -409,7 +454,7 @@ async def cmd_appx(_, m: Message):
                     f"⚠️ **Download failed** ({count+1}/{total})\n"
                     f"`{vid_title_clean}`\n`{e}`"
                 )
-            db.mark_item_done(job_id, idx)  # mark to avoid retry loop
+            db.mark_item_done(job_id, idx)
             count += 1
             continue
 
@@ -423,7 +468,7 @@ async def cmd_appx(_, m: Message):
 
         # ── Upload ────────────────────────────────────────────────────────────
         ok = await upload_file(
-            app, job_id, topic_label, local_file, caption, prog_msg
+            app, job_id, target_channel, topic_label, local_file, caption, prog_msg
         )
         remove_file(local_file)
 
@@ -441,7 +486,7 @@ async def cmd_appx(_, m: Message):
                 pass
 
         count += 1
-        await asyncio.sleep(0.5)  # small breathe between items
+        await asyncio.sleep(0.5)
 
     # ── Done ─────────────────────────────────────────────────────────────────
     _active[uid] = False
@@ -449,15 +494,13 @@ async def cmd_appx(_, m: Message):
     _cancel[uid]  = False
 
     if stopped_early:
-        # User hit /stop — delete job from DB entirely
         db.delete_job(job_id)
         await m.reply_text(
-            f"🛑 **Session stopped and removed from database.**\n"
+            f"🛑 **Session stopped.**\n"
             f"Uploaded **{count - failed}** items before stopping.\n\n"
             f"**{CREDIT}**"
         )
     else:
-        # Completed normally — delete job from DB (no need to keep it)
         db.delete_job(job_id)
         success = total - failed
         final = (
@@ -467,21 +510,26 @@ async def cmd_appx(_, m: Message):
             f"**{CREDIT}**"
         )
         await m.reply_text(final)
-        await send_text_to_topic(app, job_id, None, final)
+        try:
+            await send_text_to_topic(app, target_channel, job_id, None, final)
+        except Exception:
+            pass
 
 
 # ── Resume pending jobs on startup ────────────────────────────────────────────
 
 async def _run_job(job: dict):
-    """Execute (or resume) a saved job. Called on startup for interrupted jobs."""
-    uid      = job["user_id"]
-    chat_id  = job.get("chat_id", OWNER_ID)
-    job_id   = job["job_id"]
-    b_name   = job["batch_name"]
-    quality  = job.get("quality", 720)
-    topic_wise = job.get("topic_wise", False)
-    items_all  = job.get("items", [])
-    total      = len(items_all)
+    """Execute (or resume) a saved job on startup after a dyno restart."""
+    uid            = job["user_id"]
+    chat_id        = job.get("chat_id", OWNER_ID)
+    job_id         = job["job_id"]
+    b_name         = job["batch_name"]
+    quality        = job.get("quality", 720)
+    topic_wise     = job.get("topic_wise", False)
+    items_all      = job.get("items", [])
+    total          = len(items_all)
+    # Use the saved channel; fall back to SUPERGROUP_ID or the original chat
+    target_channel = job.get("target_channel") or SUPERGROUP_ID or chat_id
 
     if not items_all:
         db.delete_job(job_id)
@@ -508,7 +556,6 @@ async def _run_job(job: dict):
         if _cancel.get(uid):
             break
 
-        # Skip already completed items
         if job.get("progress", {}).get(str(idx)) == "done":
             count += 1
             continue
@@ -521,7 +568,7 @@ async def _run_job(job: dict):
 
         if topic_wise:
             t_name_bracket, vid_title = extract_topic_name(raw_title)
-            topic_label = t_name_bracket if t_name_bracket != "General" else lesson.get("_topic_name", "General")
+            topic_label    = t_name_bracket if t_name_bracket != "General" else lesson.get("_topic_name", "General")
             vid_title_clean = clean_title(vid_title)
         else:
             topic_label     = None
@@ -545,7 +592,9 @@ async def _run_job(job: dict):
             log.error("Resume download failed item %d: %s", idx, e)
             failed += 1
             if prog_msg:
-                await prog_msg.edit_text(f"⚠️ Download failed ({count+1}/{total})\n`{vid_title_clean}`\n`{e}`")
+                await prog_msg.edit_text(
+                    f"⚠️ Download failed ({count+1}/{total})\n`{vid_title_clean}`\n`{e}`"
+                )
             db.mark_item_done(job_id, idx)
             count += 1
             continue
@@ -557,7 +606,7 @@ async def _run_job(job: dict):
             + f"</b></blockquote>\n\n**by {CREDIT}**"
         )
 
-        ok = await upload_file(app, job_id, topic_label, local_file, caption, prog_msg)
+        ok = await upload_file(app, job_id, target_channel, topic_label, local_file, caption, prog_msg)
         remove_file(local_file)
 
         if ok:
@@ -579,23 +628,19 @@ async def _run_job(job: dict):
     _cancel[uid]  = False
     db.delete_job(job_id)
 
-    if stopped_early:
-        try:
-            await app.send_message(chat_id, f"🛑 Stopped. Uploaded {count - failed} items. Job removed from DB.")
-        except Exception:
-            pass
-    else:
-        success = total - failed
-        final = (
+    msg = (
+        f"🛑 Stopped. Uploaded {count - failed} items. Job removed."
+        if stopped_early
+        else (
             f"**✅ Batch Complete!**\n"
             f"<blockquote><b>🎯 Batch: {b_name}</b></blockquote>\n"
-            f"📊 Total: {total} | ✅ OK: {success} | ❌ Failed: {failed}\n\n**{CREDIT}**"
+            f"📊 Total: {total} | ✅ OK: {total - failed} | ❌ Failed: {failed}\n\n**{CREDIT}**"
         )
-        try:
-            await app.send_message(chat_id, final)
-        except Exception:
-            pass
-        await send_text_to_topic(app, job_id, None, final)
+    )
+    try:
+        await app.send_message(chat_id, msg)
+    except Exception:
+        pass
 
 
 async def resume_pending_jobs():
@@ -605,7 +650,6 @@ async def resume_pending_jobs():
         return
     log.info("Resuming %d interrupted job(s)...", len(pending))
     for job in pending:
-        # Reload fresh progress from DB before resuming
         fresh = db.get_job(job["job_id"])
         if fresh:
             asyncio.ensure_future(_run_job(fresh))
@@ -615,16 +659,20 @@ async def resume_pending_jobs():
 
 async def main():
     ensure_dir(DOWNLOAD_DIR)
+
+    await app.start()
     register_auth_handlers(app)
 
-    async with app:
-        log.info("AppX Bot started. Owner: %d | Supergroup: %d", OWNER_ID, SUPERGROUP_ID)
-        try:
-            await app.send_message(OWNER_ID, "🤖 **AppX Bot started!** Use /appx to begin.")
-        except Exception:
-            pass
-        await resume_pending_jobs()
-        await asyncio.Event().wait()  # keep running
+    log.info("AppX Bot started. Owner: %d", OWNER_ID)
+
+    try:
+        await app.send_message(OWNER_ID, "🤖 **AppX Bot started!** Use /appx to begin.")
+    except Exception:
+        pass
+
+    await resume_pending_jobs()
+    await idle()          # ← correct Pyrogram way to keep bot running
+    await app.stop()
 
 
 if __name__ == "__main__":
