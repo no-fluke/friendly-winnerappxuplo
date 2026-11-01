@@ -1,7 +1,7 @@
 
 colorama
 pyrogram==2.0.106
-pyromod==0.2.0
+pyromod==3.1.6
 TgCrypto
 pymongo[srv]
 certifi
